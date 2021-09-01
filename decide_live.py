@@ -17,17 +17,19 @@ from scipy import ndimage
 from skimage import morphology, measure, draw, filters
 import argparse
 import traceback
-
+from logzero import logger
 from dataHandler import sql_handler
 from dataInterface import fileReader, fileManager
+from concurrent.futures import ProcessPoolExecutor
 from collections import defaultdict
 from typing import List
 from verify import deal_observation
 
 REGION = 'Qinghai'
 
-SEP_DIR = "/public/project_data/YellowRiver/nowcasting/SEP"
-PROB_DIR = '/public/project_data/YellowRiver/nowcasting/PROB_sate_fcst'
+# SEP_DIR = "/public/project_data/YellowRiver/nowcasting/SEP"
+# PROB_DIR = '/public/project_data/YellowRiver/nowcasting/PROB_sate_fcst'
+PROB_DIR = '/public/project_data/YellowRiver/nowcasting/PROB_sate_fcst_decide'
 FY4A_DIR = "/public/project_data/SharedData/FY4A/Qinghai"
 
 
@@ -689,82 +691,45 @@ def get_fpath(t_, sate_dir=None, region='Qinghai'):
     return fpath
 
 
-def get_satellite(timespan: List) -> dict:
-    """
-    根据时间范围获取青海省风云4a数据。
-
-    :param timespan: 起讫时间。
-    :return: 数据字典，以时间为键。
-    """
-    # 根据需要设置
-    datas = defaultdict(dict)
-    source = 'FY4A'
-    ptypes = ['CTT', 'CTP', 'CTH', 'QPE', 'FDI']
-    paths = []
-    for ptype in ptypes:
-        paths_ = fileManager.get_path(source, timespan=timespan, instrument='AGRI',
-                                      zone=None, level=None, ptype=ptype,
-                                      resolution=None, mode=None, channel=None,
-                                      proj=None, suffix='.NC')
-        paths.extend(paths_)
-    for path in paths:
-        try:
-            data_t, data_obj = fileReader.get_fy4a_by_path(path)
-            data = data_obj.get('obj')
-            attrs = data_obj.get('attrs')
-            data.load()
-            if attrs[1] == 'FDI':
-                drop_vars = [var for var in list(data.data_vars) if var != 'Channel09']
-                c09 = data.drop_vars(drop_vars)
-                drop_vars = [var for var in list(data.data_vars) if var != 'Channel12']
-                c12 = data.drop_vars(drop_vars)
-                datas['Channel09'].update({data_t: c09})
-                datas['Channel12'].update({data_t: c12})
-            elif attrs[1] == 'QPE':
-                data = data.rename({'Precipitation': 'QPE'})
-                datas[attrs[1]].update({data_t: data})
-
-            else:
-                datas[attrs[1]].update({data_t: data})
-        except:
-            continue
-
-    return datas
 
 
-
-def run(t_):
-    # 预报
-    # 获取未来最近的预报时间fcst（在get_fpath中找不超过fcst的预报)
-    # 往后一个时次
+def run(initt):
+    init, start = init_params(initt)
+    logger.debug("init:{}, start:{}".format(init, start))
+    nc_raw = get_satellite([start, init])
     cal_fcst = True
     if cal_fcst:
-        fcst = t_ + timedelta(minutes=9)
-        fcst = fcst.replace(second=59, microsecond=999999)
-        fpath_sep = get_fpath(fcst, sate_dir=SEP_DIR, region=REGION)
-        if fpath_sep is not None:
-            try:
-                deal_sep(fpath_sep, cal_pot=True, cal_pohr=True,
-                         cal_poh=True, cal_posw=True, prob_dir=PROB_DIR,
-                         region=REGION)
+        deal_sep(nc_raw, initt, cal_pot=True, cal_pohr=True,
+                cal_poh=True, cal_posw=True, prob_dir=PROB_DIR,
+                region=REGION)
 
-            except OSError:
-                import time
-                time.sleep(10)
-                try:
-                    deal_sep(fpath_sep, cal_pot=True, cal_pohr=True,
-                             cal_poh=True, cal_posw=True, prob_dir=PROB_DIR,
-                             region=REGION)
-                except:
-                    traceback.print_exc()
 
-            except:
-                traceback.print_exc()
+def init_params(initt=None, startt=None, fcst=None):
 
-        else:
-            print('没找到预报文件路径。')
-            pass
+    if initt is None:
+        nt_ = datetime.utcnow()
+    else:
+        nt_ = pd.to_datetime(initt)
 
+    nt_ = nt_.ceil(freq='10T')
+    initt = nt_.replace(second=0, microsecond=0)
+
+    if startt is not None:
+        if isinstance(startt, str):
+            startt = pd.to_datetime(startt)
+        if startt > initt:
+            raise AttributeError(f"startt must be greater than initt, but got"
+                                    f" startt={startt} and initt={initt}.")
+    else:
+        startt = initt - timedelta(minutes=10)
+    if fcst is not None:
+        for ft in fcst:
+            if isinstance(ft, str):
+                ft = pd.to_datetime(ft)
+            if ft < initt:
+                raise AttributeError(f"fcst must be greater than initt, but got"
+                                        f" ft={ft} and initt={initt}.")
+    return initt, startt
 
 def get_satellite(timespan: List) -> dict:
     """
@@ -818,19 +783,27 @@ def build_parser():
     return parser
 
 
-def pool_run():
 
+
+
+
+def pool_run():
+    initt_series = pd.date_range('2020-06-01 00:00:00', '2020-08-01 00:00:00', '10T')
+    pool_size = 4
+    with ProcessPoolExecutor(pool_size) as pool:
+        tasks = [pool.submit(run, i) for i in initt_series]
 
 
 if __name__ == "__main__":
-    args = build_parser().parse_args()
-    st = pd.to_datetime(args.startt)
+    pool_run()
+    # args = build_parser().parse_args()
+    # st = pd.to_datetime(args.startt)
 
-    try:
-        run(st)
+    # try:
+    #     run(st)
 
-    except KeyboardInterrupt:
-        raise KeyboardInterrupt(u"终止.")
+    # except KeyboardInterrupt:
+    #     raise KeyboardInterrupt(u"终止.")
 
-    except:
-        traceback.print_exc()
+    # except:
+    #     traceback.print_exc()
