@@ -99,7 +99,7 @@ class SearchFile(object):
             # yield fdata, element_name, time_str
 
 
-def product_interp_1d(filename, lat, lon):
+def interp_1d(filename, lat, lon):
     element_name_list = ['POT','POH','POSW','POHR']
     with open('/home/testLZD/Fy4a/data/salite_interp_station.csv', 'a') as f:
         dr = xr.open_dataset(filename)
@@ -116,7 +116,7 @@ def product_interp_1d(filename, lat, lon):
         # logger.info("采用协程进行数据写入")
         # yield station_df_sub
         writer = csv.writer(f)
-        for row in sub_df.values:
+        for row in station_df_sub.values:
             writer.writerow(row)
             #writer.writerow(station_df_sub.values)
     logger.debug("csv写入成功！")
